@@ -4,14 +4,10 @@
 ### It walks randomly in the environment looking for victims. When half of the
 ### exploration has gone, the explorer goes back to the base.
 
-import sys
-import os
-import random
-import math
-from abc import ABC, abstractmethod
 from vs.abstract_agent import AbstAgent
 from vs.constants import VS
 from map import Map
+from bfs import BFS
 
 class Stack:
     def __init__(self):
@@ -31,7 +27,8 @@ class Explorer(AbstAgent):
     """ class attribute """
     MAX_DIFFICULTY = 1             # the maximum degree of difficulty to enter into a cell
     
-    def __init__(self, env, config_file, resc):
+    def __init__(self, env, config_file, resc, dir):
+        print(f"Explorador {dir}")
         """ Construtor do agente random on-line
         @param env: a reference to the environment 
         @param config_file: the absolute path to the explorer's config file
@@ -48,75 +45,101 @@ class Explorer(AbstAgent):
         self.map = Map()           # create a map for representing the environment
         self.victims = {}          # a dictionary of found victims: (seq): ((x,y), [<vs>])
                                    # the key is the seq number of the victim,(x,y) the position, <vs> the list of vital signals
+        
+        self.disperse_steps = 10   # quantos passos dar antes de explorar
+        self.current_plan = []     # plano de movimento a ser executado   
+        self.bfs = BFS(self.map)   # bfs para calcular o plano a ser executado 
+        self.dir = dir             # diferencia as direções de cada explorador
+        dir_map = {
+            1: (0, -1),   # Norte
+            2: (1, 0),    # Leste
+            3: (0, 1),    # Sul
+            4: (-1, 0),   # Oeste
+        }
+        # Define a direção inicial
+        self.preferred_dir = dir_map.get(dir, (0, -1))  # padrão: Norte
 
         # put the current position - the base - in the map
         self.map.add((self.x, self.y), 1, VS.NO_VICTIM, self.check_walls_and_lim())
 
-    def get_next_position(self):
-        """ Randomically, gets the next position that can be explored (no wall and inside the grid)
-            There must be at least one CLEAR position in the neighborhood, otherwise it loops forever.
-        """
-        # Check the neighborhood walls and grid limits
-        obstacles = self.check_walls_and_lim()
     
-        # Loop until a CLEAR position is found
-        while True:
-            # Get a random direction
-            direction = random.randint(0, 7)
-            # Check if the corresponding position in walls_and_lim is CLEAR
-            if obstacles[direction] == VS.CLEAR:
-                return Explorer.AC_INCR[direction]
-        
+    def find_unmapped_position(self):
+        """
+        Busca uma célula conhecida que tenha uma célula vizinha ainda não mapeada.
+        Retorna a célula conhecida que deve ser alcançada para descobrir o novo vizinho.
+        """
+        for (x, y), (_, _, walls) in self.map.data.items():
+            for dir_index, (dx, dy) in Explorer.AC_INCR.items():
+                nx, ny = x + dx, y + dy
+                if walls[dir_index] == VS.CLEAR and (nx, ny) not in self.map.data:
+                    return (nx, ny), (x, y)
+                
+        return (0, 0), (0, 0)
+            
     def explore(self):
-        # get an random increment for x and y       
-        dx, dy = self.get_next_position()
+        walls = self.check_walls_and_lim()
 
-        # Moves the body to another position  
+        # dispersa os exploradores para cada direção
+        if self.disperse_steps > 0:
+            dx, dy = self.preferred_dir
+            self.execute_move(dx, dy)
+            self.disperse_steps -= 1
+            return
+
+        # Tenta ir diretamente para uma célula vizinha desconhecida e acessível
+        for dir_index, (dx, dy) in Explorer.AC_INCR.items():
+            nx, ny = self.x + dx, self.y + dy
+            if walls[dir_index] == VS.CLEAR and (nx, ny) not in self.map.data:
+                self.execute_move(dx, dy)
+                return
+
+        # Se não houver vizinhos desconhecidos, busca a célula conhecida mais próxima de um desconhecido
+        target, entry = self.find_unmapped_position()
+        if entry:
+            # Objetivo conhecido é a célula atual
+            if (self.x, self.y) == entry:
+                dx = target[0] - self.x
+                dy = target[1] - self.y
+                self.current_plan = [(dx, dy)]
+            # Objetivo conhecido está em uma célula mais distante
+            else:
+                # Calcula o melhor caminho até o objetivo conhecido
+                path, cost = self.bfs.search((self.x, self.y), entry)
+                if path is not None and cost >= 0:
+                    dx = target[0] - entry[0]
+                    dy = target[1] - entry[1]
+                    # Plano até o objetivo conhecido + objetivo a ser descoberto
+                    self.current_plan = path + [(dx, dy)]
+
+        # 3. Executa plano se houver
+        if self.current_plan:
+            dx, dy = self.current_plan.pop(0)
+            self.execute_move(dx, dy)
+
+    def execute_move(self, dx, dy):
+        print(f"{dx} {dy}")
         rtime_bef = self.get_rtime()
         result = self.walk(dx, dy)
         rtime_aft = self.get_rtime()
 
-
-        # Test the result of the walk action
-        # Should never bump, but for safe functionning let's test
         if result == VS.BUMPED:
-            # update the map with the wall
-            self.map.add((self.x + dx, self.y + dy), VS.OBST_WALL, VS.NO_VICTIM, self.check_walls_and_lim())
-            #print(f"{self.NAME}: Wall or grid limit reached at ({self.x + dx}, {self.y + dy})")
+            return
 
         if result == VS.EXECUTED:
-            # check for victim returns -1 if there is no victim or the sequential
-            # the sequential number of a found victim
             self.walk_stack.push((dx, dy))
-
-            # update the agent's position relative to the origin
             self.x += dx
             self.y += dy
+            self.walk_time += (rtime_bef - rtime_aft)
 
-            # update the walk time
-            self.walk_time = self.walk_time + (rtime_bef - rtime_aft)
-            #print(f"{self.NAME} walk time: {self.walk_time}")
-
-            # Check for victims
             seq = self.check_for_victim()
             if seq != VS.NO_VICTIM:
                 vs = self.read_vital_signals()
                 self.victims[vs[0]] = ((self.x, self.y), vs)
-                #print(f"{self.NAME} Victim found at ({self.x}, {self.y}), rtime: {self.get_rtime()}")
-                #print(f"{self.NAME} Seq: {seq} Vital signals: {vs}")
-            
-            # Calculates the difficulty of the visited cell
+
             difficulty = (rtime_bef - rtime_aft)
-            if dx == 0 or dy == 0:
-                difficulty = difficulty / self.COST_LINE
-            else:
-                difficulty = difficulty / self.COST_DIAG
+            difficulty /= self.COST_LINE if dx == 0 or dy == 0 else self.COST_DIAG
 
-            # Update the map with the new cell
             self.map.add((self.x, self.y), difficulty, seq, self.check_walls_and_lim())
-            #print(f"{self.NAME}:at ({self.x}, {self.y}), diffic: {difficulty:.2f} vict: {seq} rtime: {self.get_rtime()}")
-
-        return
 
     def come_back(self):
         dx, dy = self.walk_stack.pop()
@@ -155,6 +178,7 @@ class Explorer(AbstAgent):
             return False
         
         # proceed to the base
+        print("Retornando a base")
         self.come_back()
         return True
 
