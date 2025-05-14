@@ -45,16 +45,15 @@ class Explorer(AbstAgent):
         
         self.current_plan = []     # plano de movimento a ser executado   
         self.return_plan = []      # plano de retorno a base
-        self.bfs = BFS(self.map)   # bfs para calcular o plano a ser executado 
         self.dir = dir             # diferencia as direções de cada explorador
         dir_map = {
-            1: (1, 1),   # Nordeste
-            2: (1, -1),  # Sudeste
-            3: (-1, 1),  # Sudoeste
-            4: (-1, -1), # Noroeste
+            1: (0, 1),   # Norte
+            2: (1, 0),   # Leste
+            3: (0, -1),  # Sul
+            4: (-1, 0),  # Oeste
         }
         # Define a direção inicial
-        self.preferred_dir = dir_map.get(dir, (1, 1))  # padrão: Nordeste
+        self.preferred_dir = dir_map.get(dir, (0, 1))  # padrão: Norte
 
         # put the current position - the base - in the map
         self.map.add((self.x, self.y), 1, VS.NO_VICTIM, self.check_walls_and_lim())
