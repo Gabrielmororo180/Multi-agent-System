@@ -28,7 +28,6 @@ class Explorer(AbstAgent):
     MAX_DIFFICULTY = 1             # the maximum degree of difficulty to enter into a cell
     
     def __init__(self, env, config_file, resc, dir):
-        print(f"Explorador {dir}")
         """ Construtor do agente random on-line
         @param env: a reference to the environment 
         @param config_file: the absolute path to the explorer's config file
@@ -36,8 +35,6 @@ class Explorer(AbstAgent):
         """
 
         super().__init__(env, config_file)
-        self.walk_stack = Stack()  # a stack to store the movements
-        self.walk_time = 0         # time consumed to walk when exploring (to decide when to come back)
         self.set_state(VS.ACTIVE)  # explorer is active since the begin
         self.resc = resc           # reference to the rescuer agent
         self.x = 0                 # current x position relative to the origin 0
@@ -46,27 +43,26 @@ class Explorer(AbstAgent):
         self.victims = {}          # a dictionary of found victims: (seq): ((x,y), [<vs>])
                                    # the key is the seq number of the victim,(x,y) the position, <vs> the list of vital signals
         
-        self.disperse_steps = 10   # quantos passos dar antes de explorar
         self.current_plan = []     # plano de movimento a ser executado   
+        self.return_plan = []      # plano de retorno a base
         self.bfs = BFS(self.map)   # bfs para calcular o plano a ser executado 
         self.dir = dir             # diferencia as direções de cada explorador
         dir_map = {
-            1: (0, -1),   # Norte
-            2: (1, 0),    # Leste
-            3: (0, 1),    # Sul
-            4: (-1, 0),   # Oeste
+            1: (1, 1),   # Nordeste
+            2: (1, -1),  # Sudeste
+            3: (-1, 1),  # Sudoeste
+            4: (-1, -1), # Noroeste
         }
         # Define a direção inicial
-        self.preferred_dir = dir_map.get(dir, (0, -1))  # padrão: Norte
+        self.preferred_dir = dir_map.get(dir, (1, 1))  # padrão: Nordeste
 
         # put the current position - the base - in the map
         self.map.add((self.x, self.y), 1, VS.NO_VICTIM, self.check_walls_and_lim())
-
     
     def find_unmapped_position(self):
         """
         Busca uma célula conhecida que tenha uma célula vizinha ainda não mapeada.
-        Retorna a célula conhecida que deve ser alcançada para descobrir o novo vizinho.
+        Retorna a célula conhecida e a desconhecida que devem ser alcançadas.
         """
         for (x, y), (_, _, walls) in self.map.data.items():
             for dir_index, (dx, dy) in Explorer.AC_INCR.items():
@@ -75,23 +71,54 @@ class Explorer(AbstAgent):
                     return (nx, ny), (x, y)
                 
         return (0, 0), (0, 0)
+    
+    def rotate_preferred_direction(self):
+        dx, dy = self.preferred_dir
+        self.preferred_dir = (dy, -dx)  # rotaciona 90° sentido horário
             
     def explore(self):
+        """
+        Esta função define o comportamento do explorador em tempo de execução.
+        A cada ciclo, o agente decide para onde se mover com base em informações
+        do ambiente parcial (mapa local) e sua direção preferida.
+        
+        Passo a passo:
+        1. O agente analisa os vizinhos imediatos e verifica se existe alguma célula
+           ainda não mapeada.
+            -> Se houver, ele prioriza a que estiver mais alinhada com sua direção preferida
+               (definida no início com base no índice do explorador).
+            -> Ao encontrar, executa o movimento diretamente e atualiza o mapa.
+            -> Caso ele encontre muitas paredes em sua volta, modifica sua direção preferida,
+               evitando ficar preso em cantos
+            
+        2. Se todos os vizinhos conhecidos já foram explorados, ele procura uma célula
+           do mapa conhecida que esteja adjacente a uma célula ainda desconhecida.
+           → Esse é o alvo de exploração (fronteira).
+           → O agente então utiliza A* para planejar um caminho até essa célula conhecida
+             e adiciona um passo extra para atingir a célula desconhecida vizinha.
+        
+        3. Se já houver um plano de movimento (calculado anteriormente), ele apenas
+           executa o próximo passo do plano.
+        """
+
         walls = self.check_walls_and_lim()
+        if walls.count(VS.OBST_WALL) >= 5:
+            self.rotate_preferred_direction()
 
-        # dispersa os exploradores para cada direção
-        if self.disperse_steps > 0:
-            dx, dy = self.preferred_dir
-            self.execute_move(dx, dy)
-            self.disperse_steps -= 1
-            return
-
-        # Tenta ir diretamente para uma célula vizinha desconhecida e acessível
+        # Define uma lista de vizinhos desconhecidos
+        unknown_neighbors = []
         for dir_index, (dx, dy) in Explorer.AC_INCR.items():
             nx, ny = self.x + dx, self.y + dy
             if walls[dir_index] == VS.CLEAR and (nx, ny) not in self.map.data:
-                self.execute_move(dx, dy)
-                return
+                unknown_neighbors.append((dx, dy))
+
+        if unknown_neighbors:
+            # Ordena por alinhamento com a direção preferida (dot product negativo = mais alinhado)
+            px, py = self.preferred_dir
+            unknown_neighbors.sort(key=lambda d: -(d[0]*px + d[1]*py))
+            dx, dy = unknown_neighbors[0]
+            self.execute_move(dx, dy)
+            return
 
         # Se não houver vizinhos desconhecidos, busca a célula conhecida mais próxima de um desconhecido
         target, entry = self.find_unmapped_position()
@@ -104,7 +131,7 @@ class Explorer(AbstAgent):
             # Objetivo conhecido está em uma célula mais distante
             else:
                 # Calcula o melhor caminho até o objetivo conhecido
-                path, cost = self.bfs.search((self.x, self.y), entry)
+                path, cost = astar_search((self.x, self.y), entry, self.map, self.COST_LINE, self.COST_DIAG)
                 if path is not None and cost >= 0:
                     dx = target[0] - entry[0]
                     dy = target[1] - entry[1]
@@ -116,21 +143,22 @@ class Explorer(AbstAgent):
             dx, dy = self.current_plan.pop(0)
             self.execute_move(dx, dy)
 
+    # Execução padrão de um movimento
     def execute_move(self, dx, dy):
-        print(f"{dx} {dy}")
         rtime_bef = self.get_rtime()
         result = self.walk(dx, dy)
         rtime_aft = self.get_rtime()
 
+        # Adiciona a parede ao mapa se não conseguir se mover
         if result == VS.BUMPED:
+            self.map.add((self.x + dx, self.y + dy), VS.OBST_WALL, VS.NO_VICTIM, self.check_walls_and_lim())
             return
 
         if result == VS.EXECUTED:
-            self.walk_stack.push((dx, dy))
             self.x += dx
             self.y += dy
-            self.walk_time += (rtime_bef - rtime_aft)
 
+            # Checa por vítimas
             seq = self.check_for_victim()
             if seq != VS.NO_VICTIM:
                 vs = self.read_vital_signals()
@@ -139,46 +167,128 @@ class Explorer(AbstAgent):
             difficulty = (rtime_bef - rtime_aft)
             difficulty /= self.COST_LINE if dx == 0 or dy == 0 else self.COST_DIAG
 
+            # Adiciona a célula ao mapa
             self.map.add((self.x, self.y), difficulty, seq, self.check_walls_and_lim())
 
     def come_back(self):
-        dx, dy = self.walk_stack.pop()
-        dx = dx * -1
-        dy = dy * -1
+        print(f"{self.NAME} - Retornando para base!")
+        
+        # Cácula o plano de retorno se ainda não houver
+        if not self.return_plan:
+            path, cost = astar_search((self.x, self.y), (0, 0), self.map, self.COST_LINE, self.COST_DIAG)
+            if path:
+                self.return_plan = path
+            else:
+                print(f"{self.NAME}: Falha ao planejar retorno à base.")
+                return
 
-        result = self.walk(dx, dy)
-        if result == VS.BUMPED:
-            print(f"{self.NAME}: when coming back bumped at ({self.x+dx}, {self.y+dy}) , rtime: {self.get_rtime()}")
-            return
-        
-        if result == VS.EXECUTED:
-            # update the agent's position relative to the origin
-            self.x += dx
-            self.y += dy
-            #print(f"{self.NAME}: coming back at ({self.x}, {self.y}), rtime: {self.get_rtime()}")
-        
+        # Executa o plano de retorno a base
+        if self.return_plan:
+            dx, dy = self.return_plan.pop(0)
+            result = self.walk(dx, dy)
+
+            # Se o plano falhar, recalcula
+            if result == VS.BUMPED:
+                print(f"{self.NAME}: bump inesperado ao retornar em ({self.x+dx}, {self.y+dy})")
+                self.return_plan = []  # força replanejamento no próximo ciclo
+                return
+
+            if result == VS.EXECUTED:
+                self.x += dx
+                self.y += dy
+            
     def deliberate(self) -> bool:
-        """ The agent chooses the next action. The simulator calls this
-        method at each cycle. Must be implemented in every agent"""
+        """ Define o comportamento do agente em cada ciclo """
 
-        # forth and back: go, read the vital signals and come back to the position
+        # Se já existe um plano de retorno, apenas executa ele
+        if self.return_plan:
+            self.come_back()
+            return True
 
-        time_tolerance = 2* self.COST_DIAG * Explorer.MAX_DIFFICULTY + self.COST_READ
+        # Margem de segurança para leitura e eventual replanejamento
+        time_tolerance = 2 * self.COST_DIAG * Explorer.MAX_DIFFICULTY + self.COST_READ
 
-        # keeps exploring while there is enough time
-        if  self.walk_time < (self.get_rtime() - time_tolerance):
+        # Calcula caminho e custo até a base
+        path_to_base, cost_to_base = astar_search((self.x, self.y), (0, 0), self.map, self.COST_LINE, self.COST_DIAG)
+        rtime = self.get_rtime()  # energia restante
+
+        print(f"{self.NAME} - Bateria: {rtime:.2f} | Custo para voltar: {cost_to_base:.2f}")
+
+        # Se ainda há energia suficiente para explorar com segurança
+        if cost_to_base >= 0 and rtime > cost_to_base + time_tolerance:
             self.explore()
             return True
 
-        # no more come back walk actions to execute or already at base
-        if self.walk_stack.is_empty() or (self.x == 0 and self.y == 0):
-            # time to pass the map and found victims to the master rescuer
+        # Se já está na base
+        if (self.x, self.y) == (0, 0):
             self.resc.sync_explorers(self.map, self.victims)
-            # finishes the execution of this agent
             return False
-        
-        # proceed to the base
-        print("Retornando a base")
+
+        # Começa a retornar
         self.come_back()
         return True
 
+from heapq import heappush, heappop
+
+def astar_search(start, goal, map_instance, cost_line=1.0, cost_diag=1.5):
+    """
+    Algoritmo A* adaptado para trabalhar com mapa parcial (map_instance.data).
+
+    Parâmetros:
+    - start: tupla (x, y) posição inicial
+    - goal: tupla (x, y) posição objetivo
+    - map_instance: instância do mapa com método get_actions_results(pos) e get_difficulty(pos)
+
+    Retorna:
+    - path: lista de movimentos (dx, dy) até o destino
+    - total_cost: custo estimado do caminho
+    """
+    def heuristic(a, b):
+        # Distância Euclidiana
+        return ((a[0] - b[0])**2 + (a[1] - b[1])**2) ** 0.5
+
+    increments = {
+        0: (0, -1),  1: (1, -1), 2: (1, 0),  3: (1, 1),
+        4: (0, 1),   5: (-1, 1), 6: (-1, 0), 7: (-1, -1)
+    }
+
+    # Verifica se as posições existem no mapa parcial
+    if goal not in map_instance.data or start not in map_instance.data:
+        return [], -1
+
+    open_set = []
+    heappush(open_set, (heuristic(start, goal), 0, start, []))
+    visited = set()
+
+    while open_set:
+        est_total_cost, cost_so_far, current, path = heappop(open_set)
+
+        if current == goal:
+            return path, cost_so_far
+
+        if current in visited:
+            continue
+        visited.add(current)
+
+        for dir_index, (dx, dy) in increments.items():
+            neighbor = (current[0] + dx, current[1] + dy)
+
+            # Só expande vizinhos conhecidos no mapa
+            if neighbor not in map_instance.data:
+                continue
+
+            # Verifica se há parede bloqueando o movimento
+            walls = map_instance.get_actions_results(current)
+            if not walls or walls[dir_index] != 0:  # VS.CLEAR == 0
+                continue
+
+            difficulty = map_instance.get_difficulty(neighbor)
+            # Define o custo real do passo baseado na direção
+            step_cost = cost_line * difficulty if dx == 0 or dy == 0 else cost_diag * difficulty
+            new_cost = cost_so_far + step_cost
+            new_path = path + [(dx, dy)]
+            est_total = new_cost + heuristic(neighbor, goal)
+
+            heappush(open_set, (est_total, new_cost, neighbor, new_path))
+
+    return [], -1  # Nenhum caminho encontrado
