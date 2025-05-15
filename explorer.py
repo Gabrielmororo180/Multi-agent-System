@@ -7,7 +7,7 @@
 from vs.abstract_agent import AbstAgent
 from vs.constants import VS
 from map import Map
-from bfs import BFS
+import math
 
 class Stack:
     def __init__(self):
@@ -63,13 +63,19 @@ class Explorer(AbstAgent):
         Busca uma célula conhecida que tenha uma célula vizinha ainda não mapeada.
         Retorna a célula conhecida e a desconhecida que devem ser alcançadas.
         """
+        menor_distancia = float('inf')
+        melhor_caminho = None
+
         for (x, y), (_, _, walls) in self.map.data.items():
             for dir_index, (dx, dy) in Explorer.AC_INCR.items():
                 nx, ny = x + dx, y + dy
                 if walls[dir_index] == VS.CLEAR and (nx, ny) not in self.map.data:
-                    return (nx, ny), (x, y)
-                
-        return (0, 0), (0, 0)
+                    distancia = math.sqrt((self.x - x)**2 + (self.y - y)**2)
+                    if distancia < menor_distancia:
+                        menor_distancia = distancia
+                        melhor_caminho = (nx, ny), (x, y)
+
+        return melhor_caminho if melhor_caminho else ((0, 0), (0, 0))
     
     def rotate_preferred_direction(self):
         dx, dy = self.preferred_dir
