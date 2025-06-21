@@ -176,7 +176,7 @@ class Explorer(AbstAgent):
             self.map.add((self.x, self.y), difficulty, seq, self.check_walls_and_lim())
 
     def come_back(self):
-        print(f"{self.NAME} - Retornando para base!")
+        #print(f"{self.NAME} - Retornando para base!")
         
         # Cácula o plano de retorno se ainda não houver
         if not self.return_plan:
@@ -217,7 +217,7 @@ class Explorer(AbstAgent):
         path_to_base, cost_to_base = astar_search((self.x, self.y), (0, 0), self.map, self.COST_LINE, self.COST_DIAG)
         rtime = self.get_rtime()  # energia restante
 
-        print(f"{self.NAME} - Bateria: {rtime:.2f} | Custo para voltar: {cost_to_base:.2f}")
+        #print(f"{self.NAME} - Bateria: {rtime:.2f} | Custo para voltar: {cost_to_base:.2f}")
 
         # Se ainda há energia suficiente para explorar com segurança
         if cost_to_base >= 0 and rtime > cost_to_base + time_tolerance:

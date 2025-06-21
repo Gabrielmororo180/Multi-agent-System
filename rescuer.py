@@ -13,6 +13,7 @@
 import os
 import random
 import math
+import numpy as np
 import csv
 import sys
 from map import Map
@@ -21,6 +22,11 @@ from vs.physical_agent import PhysAgent
 from vs.constants import VS
 from bfs import BFS
 from abc import ABC, abstractmethod
+from sklearn.preprocessing import StandardScaler
+from genetic_seq import GASequencer
+import pickle
+from collections import OrderedDict
+
 
 
 ## Classe que define o Agente Rescuer com um plano fixo
@@ -55,6 +61,7 @@ class Rescuer(AbstAgent):
         # It changes to ACTIVE when the map arrives
         self.set_state(VS.IDLE)
 
+
     def save_cluster_csv(self, cluster, cluster_id):
         filename = f"./clusters/cluster{cluster_id}.txt"
         with open(filename, 'w', newline='') as csvfile:
@@ -73,56 +80,137 @@ class Rescuer(AbstAgent):
                 vs = values[1]        # list of vital signals
                 writer.writerow([id, x, y, vs[6], vs[7]])
 
-    def cluster_victims(self):
-        """ this method does a naive clustering of victims per quadrant: victims in the
-            upper left quadrant compose a cluster, victims in the upper right quadrant, another one, and so on.
+    def cluster_victims(self, k=4, max_iter=100, tolerance=0.001):
+        """
+        Método otimizado de clusterização usando K-Means++ para inicialização de centróides.
+        
+        Parâmetros:
+        - k: número de clusters (por padrão 4)
+        - max_iter: número máximo de iterações para convergência (por padrão 100)
+        - tolerance: limiar para a mudança dos centróides (por padrão 0.001)
+        
+        Retorna:
+        - final_clusters: Lista de clusters com as vítimas atribuídas a eles.
+        """
+        
+        # Etapa 1: Coletar posições e gravidade
+        x_positions, y_positions, gravity_classes = [], [], []
+        for _, values in self.victims.items():
+            x_positions.append(values[0][0])  # Posição x
+            y_positions.append(values[0][1])  # Posição y
+            gravity_classes.append(values[1][7])  # Gravidade
+
+        # Etapa 2: Inicialização dos centróides com K-Means++
+        centroids = self._kmeans_initialization(x_positions, y_positions, gravity_classes, k)
+
+        # Etapa 3: Algoritmo K-Means
+        clusters = {}
+        centroid_changed = True
+        iter_count = 0
+
+        while centroid_changed and iter_count < max_iter:
+            centroid_changed = False
+            # Etapa 3.1: Atribuir vítimas ao centróide mais próximo
+            for vic_id, values in self.victims.items():
+                x, y = values[0]
+                gravity = values[1][7]
+                closest_centroid_id = self._assign_to_closest_centroid(x, y, gravity, centroids)
+                clusters[vic_id] = closest_centroid_id
+
+            # Etapa 3.2: Recalcular centróides
+            centroid_changed, centroid_movement = self._recalculate_centroids(k, centroids, clusters)
             
-            @returns: a list of clusters where each cluster is a dictionary in the format [vic_id]: ((x,y), [<vs>])
-                      such as vic_id is the victim id, (x,y) is the victim's position, and [<vs>] the list of vital signals
-                      including the severity value and the corresponding label"""
+            # Verificar se a mudança nos centróides é inferior ao limite de tolerância
+            if centroid_movement < tolerance:
+                centroid_changed = False
+            
+            iter_count += 1
 
-
-        # Find the upper and lower limits for x and y
-        lower_xlim = sys.maxsize    
-        lower_ylim = sys.maxsize
-        upper_xlim = -sys.maxsize - 1
-        upper_ylim = -sys.maxsize - 1
-
-        vic = self.victims
-    
-        for key, values in self.victims.items():
-            x, y = values[0]
-            lower_xlim = min(lower_xlim, x) 
-            upper_xlim = max(upper_xlim, x)
-            lower_ylim = min(lower_ylim, y)
-            upper_ylim = max(upper_ylim, y)
+        # Etapa 4: Agrupar vítimas por clusters
+        final_clusters = self._group_victims_by_cluster(k, clusters)
         
-        # Calculate midpoints
-        mid_x = lower_xlim + (upper_xlim - lower_xlim) / 2
-        mid_y = lower_ylim + (upper_ylim - lower_ylim) / 2
-        print(f"{self.NAME} ({lower_xlim}, {lower_ylim}) - ({upper_xlim}, {upper_ylim})")
-        print(f"{self.NAME} cluster mid_x, mid_y = {mid_x}, {mid_y}")
-    
-        # Divide dictionary into quadrants
-        upper_left = {}
-        upper_right = {}
-        lower_left = {}
-        lower_right = {}
+        return final_clusters
+
+    def _kmeans_initialization(self, x_positions, y_positions, gravity_classes, k):
+        """
+        Inicialização otimizada dos centróides usando o K-Means++.
+        """
+        centroids = []
+        # Escolher o primeiro centróide aleatoriamente
+        centroids.append((random.uniform(min(x_positions), max(x_positions)),
+                          random.uniform(min(y_positions), max(y_positions)),
+                          random.uniform(min(gravity_classes), max(gravity_classes))))
         
-        for key, values in self.victims.items():  # values are pairs: ((x,y), [<vital signals list>])
-            x, y = values[0]
-            if x <= mid_x:
-                if y <= mid_y:
-                    upper_left[key] = values
-                else:
-                    lower_left[key] = values
-            else:
-                if y <= mid_y:
-                    upper_right[key] = values
-                else:
-                    lower_right[key] = values
-    
-        return [upper_left, upper_right, lower_left, lower_right]
+        # Escolher os outros centróides
+        for _ in range(1, k):
+            distances = []
+            for i in range(len(x_positions)):
+                dist = min([self._euclidean_distance((x_positions[i], y_positions[i], gravity_classes[i]), c) for c in centroids])
+                distances.append(dist)
+            
+            # Escolher o próximo centróide com base na probabilidade das distâncias
+            prob_dist = [d / sum(distances) for d in distances]
+            chosen_idx = np.random.choice(range(len(x_positions)), p=prob_dist)
+            centroids.append((x_positions[chosen_idx], y_positions[chosen_idx], gravity_classes[chosen_idx]))
+
+        return centroids
+
+    def _assign_to_closest_centroid(self, x, y, gravity, centroids):
+        """
+        Atribui uma vítima ao centróide mais próximo com base na distância.
+        """
+        min_dist = float('inf')
+        closest_centroid_id = -1
+        for i, (x_centroid, y_centroid, gravity_centroid) in enumerate(centroids):
+            dist = (x - x_centroid)**2 + (y - y_centroid)**2 + (gravity - gravity_centroid)**2
+            if dist < min_dist:
+                min_dist = dist
+                closest_centroid_id = i
+        return closest_centroid_id
+
+    def _recalculate_centroids(self, k, centroids, clusters):
+        """
+        Recalcula os centróides com base nas vítimas atribuídas.
+        """
+        centroid_changed = False
+        total_movement = 0
+        for i in range(k):
+            cluster_victims = [vic_id for vic_id, cluster_id in clusters.items() if cluster_id == i]
+            if not cluster_victims:
+                continue
+
+            x_sum, y_sum, gravity_sum, count = 0, 0, 0, len(cluster_victims)
+            for vic_id in cluster_victims:
+                x, y = self.victims[vic_id][0]
+                gravity = self.victims[vic_id][1][7]
+                x_sum += x
+                y_sum += y
+                gravity_sum += gravity
+
+            new_centroid = (x_sum / count, y_sum / count, gravity_sum / count)
+            movement = self._euclidean_distance(centroids[i], new_centroid)
+            total_movement += movement
+
+            if movement > 0:
+                centroids[i] = new_centroid
+                centroid_changed = True
+
+        return centroid_changed, total_movement
+
+    def _group_victims_by_cluster(self, k, clusters):
+        """
+        Agrupa as vítimas por seus respectivos clusters.
+        """
+        final_clusters = [{} for _ in range(k)]
+        for vic_id, cluster_id in clusters.items():
+            final_clusters[cluster_id][vic_id] = self.victims[vic_id]
+        return final_clusters
+
+    def _euclidean_distance(self, point1, point2):
+        """
+        Calcula a distância euclidiana entre dois pontos.
+        """
+        return np.sqrt(sum((a - b)**2 for a, b in zip(point1, point2)))
 
     def predict_severity_and_class(self):
         """ @TODO to be replaced by a classifier and a regressor to calculate the class of severity and the severity values.
@@ -130,6 +218,7 @@ class Rescuer(AbstAgent):
 
             This implementation assigns random values to both, severity value and class"""
 
+       
         for vic_id, values in self.victims.items():
             severity_value = random.uniform(0.1, 99.9)          # to be replaced by a regressor 
             severity_class = random.randint(1, 4)               # to be replaced by a classifier
@@ -137,21 +226,30 @@ class Rescuer(AbstAgent):
 
 
     def sequencing(self):
-        """ Currently, this method sort the victims by the x coordinate followed by the y coordinate
-            @TODO It must be replaced by a Genetic Algorithm that finds the possibly best visiting order """
-
-        """ We consider an agent may have different sequences of rescue. The idea is the rescuer can execute
-            sequence[0], sequence[1], ...
-            A sequence is a dictionary with the following structure: [vic_id]: ((x,y), [<vs>]"""
-
         new_sequences = []
-
-        for seq in self.sequences:   # a list of sequences, being each sequence a dictionary
-            seq = dict(sorted(seq.items(), key=lambda item: item[1]))
-            new_sequences.append(seq)       
-            #print(f"{self.NAME} sequence of visit:\n{seq}\n")
-
+        for cluster in self.sequences:
+            if not cluster:
+                continue
+            # Run GA to find the best sequence
+            sequencer = GASequencer(
+                cluster, 
+                self.map, 
+                self.COST_LINE, 
+                self.COST_DIAG,
+                  pop_size=200,          # <== aqui, não population_size
+                max_generations=500,
+                mut_rate=0.3,
+                time_limit=self.TLIM,
+                first_aid_time=self.COST_FIRST_AID
+            )
+            best_sequence = sequencer.run()
+            # Convert sequence to OrderedDict
+            ordered_cluster = OrderedDict()
+            for vic_id in best_sequence:
+                ordered_cluster[vic_id] = cluster[vic_id]
+            new_sequences.append(ordered_cluster)
         self.sequences = new_sequences
+
 
     def planner(self):
         """ A method that calculates the path between victims: walk actions in a OFF-LINE MANNER (the agent plans, stores the plan, and
@@ -289,4 +387,3 @@ class Rescuer(AbstAgent):
             print(f"{self.NAME} Plan fail - walk error - agent at ({self.x}, {self.x})")
             
         return True
-
