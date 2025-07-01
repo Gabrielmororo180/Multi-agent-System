@@ -27,11 +27,13 @@ from genetic_seq import GASequencer
 import pickle
 from collections import OrderedDict
 
+from colorama import init, Fore
+init()
 
 
 ## Classe que define o Agente Rescuer com um plano fixo
 class Rescuer(AbstAgent):
-    def __init__(self, env, config_file, nb_of_explorers=1,clusters=[]):
+    def __init__(self, env, config_file, nb_of_explorers=1, model=None, use_model=False, clusters=[]):
         """ 
         @param env: a reference to an instance of the environment class
         @param config_file: the absolute path to the agent's config file
@@ -42,6 +44,8 @@ class Rescuer(AbstAgent):
 
         # Specific initialization for the rescuer
         self.nb_of_explorers = nb_of_explorers       # number of explorer agents to wait for start
+        self.model = model
+        self.use_model = use_model
         self.received_maps = 0                       # counts the number of explorers' maps
         self.map = Map()                             # explorer will pass the map
         self.victims = {}            # a dictionary of found victims: [vic_id]: ((x,y), [<vs>])
@@ -100,6 +104,8 @@ class Rescuer(AbstAgent):
             y_positions.append(values[0][1])  # Posição y
             gravity_classes.append(values[1][7])  # Gravidade
 
+        print(f"{self.NAME}: Collected {len(x_positions)} victims, x_range=({min(x_positions):.2f}, {max(x_positions):.2f}), y_range=({min(y_positions):.2f}, {max(y_positions):.2f}), gravity_range=({min(gravity_classes):.2f}, {max(gravity_classes):.2f})")
+
         # Etapa 2: Inicialização dos centróides com K-Means++
         centroids = self._kmeans_initialization(x_positions, y_positions, gravity_classes, k)
 
@@ -119,6 +125,9 @@ class Rescuer(AbstAgent):
 
             # Etapa 3.2: Recalcular centróides
             centroid_changed, centroid_movement = self._recalculate_centroids(k, centroids, clusters)
+
+            ### ADDED: Log centroid movement
+            print(f"{self.NAME}: Iteration {iter_count + 1}: Total centroid movement = {centroid_movement:.6f}")
             
             # Verificar se a mudança nos centróides é inferior ao limite de tolerância
             if centroid_movement < tolerance:
@@ -128,6 +137,11 @@ class Rescuer(AbstAgent):
 
         # Etapa 4: Agrupar vítimas por clusters
         final_clusters = self._group_victims_by_cluster(k, clusters)
+
+        ### ADDED: Log final cluster details
+        for i, cluster in enumerate(final_clusters):
+            victim_ids = list(cluster.keys())
+            print(f"{Fore.GREEN}{self.NAME}: Cluster {i} contains {len(cluster)} victims: {victim_ids[:5]}{'...' if len(victim_ids) > 5 else ''}{Fore.RESET}")
         
         return final_clusters
 
@@ -141,6 +155,9 @@ class Rescuer(AbstAgent):
                           random.uniform(min(y_positions), max(y_positions)),
                           random.uniform(min(gravity_classes), max(gravity_classes))))
         
+        ### ADDED: Log first centroid
+        print(f"{self.NAME}: First centroid: {centroids}")
+
         # Escolher os outros centróides
         for _ in range(1, k):
             distances = []
@@ -177,6 +194,8 @@ class Rescuer(AbstAgent):
         for i in range(k):
             cluster_victims = [vic_id for vic_id, cluster_id in clusters.items() if cluster_id == i]
             if not cluster_victims:
+                ### ADDED: Log empty cluster
+                print(f"{self.NAME}: Cluster {i} is empty, keeping centroid unchanged")
                 continue
 
             x_sum, y_sum, gravity_sum, count = 0, 0, 0, len(cluster_victims)
@@ -192,6 +211,8 @@ class Rescuer(AbstAgent):
             total_movement += movement
 
             if movement > 0:
+                ### ADDED: Log centroid update
+                print(f"{self.NAME}: Updated centroid {i}, movement={movement:.6f}")
                 centroids[i] = new_centroid
                 centroid_changed = True
 
@@ -218,11 +239,34 @@ class Rescuer(AbstAgent):
 
             This implementation assigns random values to both, severity value and class"""
 
-       
-        for vic_id, values in self.victims.items():
-            severity_value = random.uniform(0.1, 99.9)          # to be replaced by a regressor 
-            severity_class = random.randint(1, 4)               # to be replaced by a classifier
-            values[1].extend([severity_value, severity_class])  # append to the list of vital signals; values is a pair( (x,y), [<vital signals list>] )
+        with open('file_predict.txt', 'w') as f_predict:
+            for vic_id, values in self.victims.items():
+                # Step 1: Extract features (first 5 vital signals: sp, dp, qp, pf, rf)
+                features = values[1][:5]  # Assumes vital signals are ordered as in PredictionModel
+
+                # Step 2: Scale features using the model's scaler
+                features_scaled = self.model.scaler.transform([features])
+
+                # Step 3: Predict severity value using the regressor
+                severity_value = self.model.regressor.predict(features_scaled)[0]
+
+                # Step 4: Predict severity class using the classifier
+                severity_class = self.model.classifier.predict(features_scaled)[0]
+
+                # Step 5: Write predictions to file for test set victims (if test_ids available)
+                if vic_id in self.model.test_ids:
+                    x, y = values[0]  # Victim's coordinates
+                    f_predict.write(f"{vic_id},{x},{y},{severity_value:.2f},{severity_class}\n")
+
+                # Step 6: Append predictions to the victim's vital signals
+                if self.use_model:
+                    values[1].extend([severity_value, severity_class])
+
+                else:
+                    for vic_id, values in self.victims.items():
+                        severity_value = random.uniform(0.1, 99.9)          # to be replaced by a regressor  
+                        severity_class = random.randint(1, 4)               # to be replaced by a classifier
+                        values[1].extend([severity_value, severity_class])  # append to the list of vital signals; values is a pair( (x,y), [<vital signals list>] )
 
 
     def sequencing(self):
@@ -248,6 +292,10 @@ class Rescuer(AbstAgent):
             for vic_id in best_sequence:
                 ordered_cluster[vic_id] = cluster[vic_id]
             new_sequences.append(ordered_cluster)
+
+            ### ADDED: Log sequence result
+            print(f"{Fore.GREEN}{self.NAME}: Sequence generated: {[vic_id for vic_id in best_sequence]}{Fore.RESET}")
+
         self.sequences = new_sequences
 
 
@@ -300,10 +348,17 @@ class Rescuer(AbstAgent):
         self.map.update(explorer_map)
         self.victims.update(victims)
 
+        ### ADDED: Log map and victim update
+        print(f"{Fore.GREEN}{self.NAME}: Received map {self.received_maps}/{self.nb_of_explorers}, cells={len(explorer_map.data)}, victims={len(victims)}{Fore.RESET}")
+        print(f"{self.NAME}: Merged map, total cells={len(self.map.data)}")
+
         if self.received_maps == self.nb_of_explorers:
-            print(f"{self.NAME} all maps received from the explorers")
+            #print(f"{self.NAME} all maps received from the explorers")
             #self.map.draw()
             #print(f"{self.NAME} found victims by all explorers:\n{self.victims}")
+
+            ### ADDED: Log completion of map collection
+            print(f"{Fore.RED}{self.NAME}: All maps received, total victims={len(self.victims)}, total map cells={len(self.map.data)}{Fore.RESET}")
 
             #@TODO predict the severity and the class of victims' using a classifier
             self.predict_severity_and_class()
@@ -322,13 +377,16 @@ class Rescuer(AbstAgent):
             # Assign the cluster the master agent is in charge of 
             self.clusters = [clusters_of_vic[0]]  # the first one
 
+            ### ADDED: Log master rescuer cluster assignment
+            print(f"{Fore.RED}{self.NAME}: Assigned cluster 1 with {len(self.clusters[0])} victims{Fore.RESET}")
+
             # Instantiate the other rescuers and assign the clusters to them
             for i in range(1, 4):    
                 #print(f"{self.NAME} instantianting rescuer {i+1}, {self.get_env()}")
                 filename = f"rescuer_{i+1:1d}_config.txt"
                 config_file = os.path.join(self.config_folder, filename)
                 # each rescuer receives one cluster of victims
-                rescuers[i] = Rescuer(self.get_env(), config_file, 4, [clusters_of_vic[i]]) 
+                rescuers[i] = Rescuer(self.get_env(), config_file, 4, self.model, self.use_model, [clusters_of_vic[i]]) 
                 rescuers[i].map = self.map     # each rescuer have the map
 
             
@@ -346,6 +404,8 @@ class Rescuer(AbstAgent):
                     else:
                         self.save_sequence_csv(sequence, (i+1)+ j*10)      # demais sequencias do 1o. cluster: seq11, seq12, seq13, ...
 
+                    ### ADDED: Log sequence saving
+                    print(f"{self.NAME}: Saved sequence {i+1+j*10} for Rescuer_{i+1}")
             
                 rescuer.planner()            # make the plan for the trajectory
                 rescuer.set_state(VS.ACTIVE) # from now, the simulator calls the deliberation method 
