@@ -254,9 +254,8 @@ class Rescuer(AbstAgent):
                 severity_class = self.model.classifier.predict(features_scaled)[0]
 
                 # Step 5: Write predictions to file for test set victims (if test_ids available)
-                if vic_id in self.model.test_ids:
-                    x, y = values[0]  # Victim's coordinates
-                    f_predict.write(f"{vic_id},{x},{y},{severity_value:.2f},{severity_class}\n")
+                x, y = values[0]  # Victim's coordinates
+                f_predict.write(f"{vic_id},{x},{y},{severity_value:.2f},{severity_class}\n")
 
                 # Step 6: Append predictions to the victim's vital signals
                 if self.use_model:

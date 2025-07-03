@@ -43,9 +43,9 @@ class PredictionModel:
         self.regressor = best_regressor
 
         # Write true values for test set to file_target.txt
-        with open('file_target.txt', 'w') as f_target:
-            for vid, gr, sev in zip(test_ids, y_gravity_test, y_severity_test):
-                f_target.write(f"{vid},{gr:.2f},{sev}\n")
+        # with open('file_target.txt', 'w') as f_target:
+        #     for vid, gr, sev in zip(test_ids, y_gravity_test, y_severity_test):
+        #         f_target.write(f"{vid},{gr:.2f},{sev}\n")
 
     def train_classifier(self, X_train, y_train):
         """Train and select the best classifier using GridSearchCV."""
@@ -58,7 +58,7 @@ class PredictionModel:
 
         dt_params = {
             'criterion': ['gini', 'entropy'],
-            'max_depth': [2, 4, 8],
+            'max_depth': [3, 5, 10],
             'min_samples_leaf': [8, 12]
         }
 
@@ -72,7 +72,8 @@ class PredictionModel:
 
         # MLPClassifier
         mlp_params = {
-            'hidden_layer_sizes': [(111, 55), (100, 50), (50, 25)],
+            #'hidden_layer_sizes': [(111, 55), (100, 50), (50, 25)],
+            'hidden_layer_sizes': [(10,), (50,), (30, 10)],
             'alpha': [0.01, 0.001],
             'learning_rate': ['adaptive', 'constant']
         }
@@ -83,6 +84,9 @@ class PredictionModel:
             scoring='f1_weighted'
         )
         mlp_clf.fit(X_train, y_train)
+
+        print(f"DT_Classifier: {dt_clf.best_score_} - {dt_clf.best_estimator_}")
+        print(f"MLP_Classifier: {mlp_clf.best_score_} - {mlp_clf.best_estimator_}")
 
         # Select the best classifier
         if dt_clf.best_score_ > mlp_clf.best_score_:
