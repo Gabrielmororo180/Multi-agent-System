@@ -59,6 +59,8 @@ if __name__ == '__main__':
         #data_folder_name = os.path.join("datasets", "data_42v_20x20")
         #data_folder_name = os.path.join("datasets", "data_132v_100x80")
         data_folder_name = os.path.join("datasets", "data_430v_94x94")
+        #data_folder_name = os.path.join("datasets", "data_4000v")
+
         config_ag_folder_name = os.path.join("cfg_1")
 
         tlim = input("TLIM: ")

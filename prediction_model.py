@@ -25,7 +25,6 @@ class PredictionModel:
         y_severity = np.array(severity_targets)
 
         # Split into train and test sets
-        #test_size = 0.2
         X_train, X_test, y_gravity_train, y_gravity_test, y_severity_train, y_severity_test, train_ids, test_ids = train_test_split(
             X, y_gravity, y_severity, victim_ids, test_size=test_size, random_state=42
         )

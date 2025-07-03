@@ -242,7 +242,7 @@ class Rescuer(AbstAgent):
         with open('file_predict.txt', 'w') as f_predict:
             for vic_id, values in self.victims.items():
                 # Step 1: Extract features (first 5 vital signals: sp, dp, qp, pf, rf)
-                features = values[1][:5]  # Assumes vital signals are ordered as in PredictionModel
+                features = values[1][1:6]  # Assumes vital signals are ordered as in PredictionModel
 
                 # Step 2: Scale features using the model's scaler
                 features_scaled = self.model.scaler.transform([features])
