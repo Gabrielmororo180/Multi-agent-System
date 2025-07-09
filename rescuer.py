@@ -12,19 +12,13 @@
 
 import os
 import random
-import math
 import numpy as np
 import csv
-import sys
 from map import Map
 from vs.abstract_agent import AbstAgent
-from vs.physical_agent import PhysAgent
 from vs.constants import VS
 from bfs import BFS
-from abc import ABC, abstractmethod
-from sklearn.preprocessing import StandardScaler
 from genetic_seq import GASequencer
-import pickle
 from collections import OrderedDict
 
 from colorama import init, Fore
@@ -97,46 +91,41 @@ class Rescuer(AbstAgent):
         - final_clusters: Lista de clusters com as vítimas atribuídas a eles.
         """
         
-        # Etapa 1: Coletar posições e gravidade
-        x_positions, y_positions, gravity_classes = [], [], []
-        for _, values in self.victims.items():
-            x_positions.append(values[0][0])  # Posição x
-            y_positions.append(values[0][1])  # Posição y
-            gravity_classes.append(values[1][7])  # Gravidade
+        # Etapa 1: Coletar posições
+        positions = []
+        for vic_id, values in self.victims.items():
+            positions.append(values[0])
 
-        print(f"{self.NAME}: Collected {len(x_positions)} victims, x_range=({min(x_positions):.2f}, {max(x_positions):.2f}), y_range=({min(y_positions):.2f}, {max(y_positions):.2f}), gravity_range=({min(gravity_classes):.2f}, {max(gravity_classes):.2f})")
+        print(f"{self.NAME}: Coletou {len(positions)} vítimas para clusterizar.")
 
         # Etapa 2: Inicialização dos centróides com K-Means++
-        centroids = self._kmeans_initialization(x_positions, y_positions, gravity_classes, k)
+        centroids = self._kmeans_initialization(positions, k)
 
         # Etapa 3: Algoritmo K-Means
         clusters = {}
-        centroid_changed = True
         iter_count = 0
 
-        while centroid_changed and iter_count < max_iter:
-            centroid_changed = False
+        for it in range(max_iter):
             # Etapa 3.1: Atribuir vítimas ao centróide mais próximo
-            for vic_id, values in self.victims.items():
-                x, y = values[0]
-                gravity = values[1][7]
-                closest_centroid_id = self._assign_to_closest_centroid(x, y, gravity, centroids)
+            for i, vic_id in enumerate(self.victims.keys()):
+                pos = positions[i]
+                closest_centroid_id = self._assign_to_closest_centroid(pos, centroids)
                 clusters[vic_id] = closest_centroid_id
 
-            # Etapa 3.2: Recalcular centróides
-            centroid_changed, centroid_movement = self._recalculate_centroids(k, centroids, clusters)
+            # Etapa 3.2: Recalcular centróides e verificar convergência
+            new_centroids, centroid_movement = self._recalculate_centroids(k, centroids, clusters, positions)
 
-            ### ADDED: Log centroid movement
-            print(f"{self.NAME}: Iteration {iter_count + 1}: Total centroid movement = {centroid_movement:.6f}")
-            
-            # Verificar se a mudança nos centróides é inferior ao limite de tolerância
+            # Condição de parada: se o movimento for menor que a tolerância
             if centroid_movement < tolerance:
-                centroid_changed = False
-            
-            iter_count += 1
+                break
 
-        # Etapa 4: Agrupar vítimas por clusters
+            centroids = new_centroids
+            iter_count = it + 1
+
         final_clusters = self._group_victims_by_cluster(k, clusters)
+            
+        if iter_count == max_iter -1:
+            print(f"{self.NAME}: Atingiu o número máximo de iterações ({max_iter}).")
 
         ### ADDED: Log final cluster details
         for i, cluster in enumerate(final_clusters):
@@ -145,78 +134,86 @@ class Rescuer(AbstAgent):
         
         return final_clusters
 
-    def _kmeans_initialization(self, x_positions, y_positions, gravity_classes, k):
+    def _kmeans_initialization(self, positions, k):
         """
         Inicialização otimizada dos centróides usando o K-Means++.
         """
         centroids = []
         # Escolher o primeiro centróide aleatoriamente
-        centroids.append((random.uniform(min(x_positions), max(x_positions)),
-                          random.uniform(min(y_positions), max(y_positions)),
-                          random.uniform(min(gravity_classes), max(gravity_classes))))
-        
-        ### ADDED: Log first centroid
-        print(f"{self.NAME}: First centroid: {centroids}")
+        first_centroid_idx = random.randint(0, len(positions) - 1)
+        centroids.append(positions[first_centroid_idx])
 
-        # Escolher os outros centróides
         for _ in range(1, k):
-            distances = []
-            for i in range(len(x_positions)):
-                dist = min([self._euclidean_distance((x_positions[i], y_positions[i], gravity_classes[i]), c) for c in centroids])
-                distances.append(dist)
+            dist_sq = []
+            for pos in positions:
+                # Calcula a distância quadrada mínima de um ponto a qualquer centróide existente
+                min_dist_sq = min([self._euclidean_distance(pos, c)**2 for c in centroids])
+                dist_sq.append(min_dist_sq)
             
-            # Escolher o próximo centróide com base na probabilidade das distâncias
-            prob_dist = [d / sum(distances) for d in distances]
-            chosen_idx = np.random.choice(range(len(x_positions)), p=prob_dist)
-            centroids.append((x_positions[chosen_idx], y_positions[chosen_idx], gravity_classes[chosen_idx]))
+            # Escolhe o próximo centróide com uma probabilidade proporcional à distância quadrada
+            probabilities = np.array(dist_sq) / sum(dist_sq)
+            cumulative_probabilities = np.cumsum(probabilities)
+            r = random.random()
+            
+            chosen_idx = -1
+            for i, p in enumerate(cumulative_probabilities):
+                if r < p:
+                    chosen_idx = i
+                    break
+            
+            # Garante que um índice seja escolhido
+            if chosen_idx == -1:
+                chosen_idx = len(positions) -1
+            
+            centroids.append(positions[chosen_idx])
 
         return centroids
 
-    def _assign_to_closest_centroid(self, x, y, gravity, centroids):
+    def _assign_to_closest_centroid(self, pos, centroids):
         """
         Atribui uma vítima ao centróide mais próximo com base na distância.
         """
         min_dist = float('inf')
         closest_centroid_id = -1
-        for i, (x_centroid, y_centroid, gravity_centroid) in enumerate(centroids):
-            dist = (x - x_centroid)**2 + (y - y_centroid)**2 + (gravity - gravity_centroid)**2
+        for i, centroid in enumerate(centroids):
+            dist = self._euclidean_distance(pos, centroid)
             if dist < min_dist:
                 min_dist = dist
                 closest_centroid_id = i
         return closest_centroid_id
 
-    def _recalculate_centroids(self, k, centroids, clusters):
+    def _recalculate_centroids(self, k, old_centroids, clusters, positions):
         """
-        Recalcula os centróides com base nas vítimas atribuídas.
+        Recalcula os centróides 2D com base na média das posições das vítimas atribuídas.
         """
-        centroid_changed = False
-        total_movement = 0
+        new_centroids = []
+        # Mapeia vic_id para sua posição para facilitar a busca
+        vic_positions = {vic_id: pos for vic_id, pos in zip(self.victims.keys(), positions)}
+        
         for i in range(k):
-            cluster_victims = [vic_id for vic_id, cluster_id in clusters.items() if cluster_id == i]
-            if not cluster_victims:
-                ### ADDED: Log empty cluster
-                print(f"{self.NAME}: Cluster {i} is empty, keeping centroid unchanged")
+            # Obtém os IDs das vítimas neste cluster
+            cluster_victims_ids = [vic_id for vic_id, cluster_id in clusters.items() if cluster_id == i]
+            
+            if not cluster_victims_ids:
+                # Se o cluster estiver vazio, mantém o centróide antigo
+                new_centroids.append(old_centroids[i])
                 continue
 
-            x_sum, y_sum, gravity_sum, count = 0, 0, 0, len(cluster_victims)
-            for vic_id in cluster_victims:
-                x, y = self.victims[vic_id][0]
-                gravity = self.victims[vic_id][1][7]
-                x_sum += x
-                y_sum += y
-                gravity_sum += gravity
+            # Calcula a média das coordenadas x e y
+            sum_x, sum_y = 0, 0
+            for vic_id in cluster_victims_ids:
+                pos = vic_positions[vic_id]
+                sum_x += pos[0]
+                sum_y += pos[1]
+            
+            count = len(cluster_victims_ids)
+            new_centroid = (sum_x / count, sum_y / count)
+            new_centroids.append(new_centroid)
 
-            new_centroid = (x_sum / count, y_sum / count, gravity_sum / count)
-            movement = self._euclidean_distance(centroids[i], new_centroid)
-            total_movement += movement
-
-            if movement > 0:
-                ### ADDED: Log centroid update
-                print(f"{self.NAME}: Updated centroid {i}, movement={movement:.6f}")
-                centroids[i] = new_centroid
-                centroid_changed = True
-
-        return centroid_changed, total_movement
+        # Calcula o movimento total dos centróides para verificar a convergência
+        total_movement = sum(self._euclidean_distance(old, new) for old, new in zip(old_centroids, new_centroids))
+        
+        return new_centroids, total_movement
 
     def _group_victims_by_cluster(self, k, clusters):
         """
@@ -224,7 +221,8 @@ class Rescuer(AbstAgent):
         """
         final_clusters = [{} for _ in range(k)]
         for vic_id, cluster_id in clusters.items():
-            final_clusters[cluster_id][vic_id] = self.victims[vic_id]
+            if cluster_id != -1: # Garante que a vítima foi atribuída a um cluster válido
+                final_clusters[cluster_id][vic_id] = self.victims[vic_id]
         return final_clusters
 
     def _euclidean_distance(self, point1, point2):
@@ -352,10 +350,6 @@ class Rescuer(AbstAgent):
         print(f"{self.NAME}: Merged map, total cells={len(self.map.data)}")
 
         if self.received_maps == self.nb_of_explorers:
-            #print(f"{self.NAME} all maps received from the explorers")
-            #self.map.draw()
-            #print(f"{self.NAME} found victims by all explorers:\n{self.victims}")
-
             ### ADDED: Log completion of map collection
             print(f"{Fore.RED}{self.NAME}: All maps received, total victims={len(self.victims)}, total map cells={len(self.map.data)}{Fore.RESET}")
 

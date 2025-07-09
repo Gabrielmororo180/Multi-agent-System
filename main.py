@@ -43,8 +43,7 @@ def main(data_folder_name, config_ag_folder_name):
     
     # Instantiate the environment
     env = Env(data_folder)
-
-    print(f"Gerando file_target.txt")
+    
     with open('file_target.txt', 'w', newline='') as f_target:
         # Usar o módulo csv é uma boa prática para evitar erros de formatação
         import csv
@@ -56,22 +55,8 @@ def main(data_folder_name, config_ag_folder_name):
             gravity_value = signal[6]
             gravity_class = signal[7]
             writer.writerow([vic_id, f"{gravity_value:.2f}", gravity_class])
-    print(f"file_target.txt gerado")
-
-    # Parte 2 e 3: classificação e regressão
-    test_size = input("Test size(0.25):")
-    if test_size == '': test_size = 0.25
-    else:   
-        try:
-            test_size = float(test_size)
-        except ValueError:
-            print("Valor invalido.")
-            return
         
-    external_training_file = os.path.join("datasets", "data_4000v", "env_vital_signals.txt")
-
-    training_signals = load_external_signals(external_training_file)
-    model = PredictionModel(test_size, training_signals)
+    model = PredictionModel.load_model("trained_model.pkl")
 
     # Instantiate master_rescuer
     # This agent unifies the maps and instantiate other 3 agents
@@ -98,7 +83,7 @@ if __name__ == '__main__':
     else:
         #data_folder_name = os.path.join("datasets", "data_42v_20x20")
         #data_folder_name = os.path.join("datasets", "data_132v_100x80")
-        data_folder_name = os.path.join("datasets", "data_430v_100x100")
+        data_folder_name = os.path.join("datasets", "data_430v_94x94")
         #data_folder_name = os.path.join("datasets", "data_4000v")
 
         config_ag_folder_name = os.path.join("cfg_1")

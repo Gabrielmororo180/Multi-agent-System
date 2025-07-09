@@ -3,6 +3,9 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.neural_network import MLPClassifier, MLPRegressor
+import pickle
+import csv
+import os
 
 class PredictionModel:
 
@@ -126,4 +129,50 @@ class PredictionModel:
         if dt_reg.best_score_ > mlp_reg.best_score_:
             return dt_reg.best_estimator_#, 'DecisionTreeRegressor'
         return mlp_reg.best_estimator_#, 'MLPRegressor'
+    
+    def save_model(self, filepath="trained_model.pkl"):
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+        print(f"Model saved to {filepath}")
+
+    @staticmethod
+    def load_model(filepath="trained_model.pkl"):
+        with open(filepath, 'rb') as f:
+            model = pickle.load(f)
+        print(f"Model loaded from {filepath}")
+        return model
+    
+def load_external_signals(filepath):
+    print(f"Carregando dados de treinamento")
+    signals = []
+    try:
+        with open(filepath, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if not row: continue
+                formatted_row = [
+                    int(row[0]),
+                    float(row[1]),
+                    float(row[2]),
+                    float(row[3]),
+                    float(row[4]),
+                    float(row[5]),
+                    float(row[6]),
+                    int(row[7])
+                ]
+                signals.append(formatted_row)
+        return signals
+    except Exception as e:
+        print(f"ERRO: {e}")
+    
+if __name__ == '__main__':
+    print("--- Starting Model Training ---")
+
+    external_training_file = os.path.join("datasets", "data_4000v", "env_vital_signals.txt")
+    training_signals = load_external_signals(external_training_file)
+    model = PredictionModel(0.25, training_signals)
+    
+    model.save_model("trained_model.pkl")
+    
+    print("--- Model training and saving complete. ---")
 
