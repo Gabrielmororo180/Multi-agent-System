@@ -17,7 +17,7 @@ import csv
 from map import Map
 from vs.abstract_agent import AbstAgent
 from vs.constants import VS
-from bfs import BFS
+from dijkstra import Dijkstra
 from genetic_seq import GASequencer
 from collections import OrderedDict
 
@@ -258,6 +258,7 @@ class Rescuer(AbstAgent):
                 # Step 6: Append predictions to the victim's vital signals
                 if self.use_model:
                     values[1].extend([severity_value, severity_class])
+                    print(values[1])
 
                 else:
                     for vic_id, values in self.victims.items():
@@ -302,7 +303,7 @@ class Rescuer(AbstAgent):
 
 
         # let's instantiate the breadth-first search
-        bfs = BFS(self.map, self.COST_LINE, self.COST_DIAG)
+        dijkstra = Dijkstra((0,0), self.map, self.COST_LINE, self.COST_DIAG)
 
         # for each victim of the first sequence of rescue for this agent, we're going go calculate a path
         # starting at the base - always at (0,0) in relative coords
@@ -317,14 +318,20 @@ class Rescuer(AbstAgent):
         start = (0,0) # always from starting at the base
         for vic_id in sequence:
             goal = sequence[vic_id][0]
-            plan, time = bfs.search(start, goal, self.plan_rtime)
+            _, timeback = dijkstra.calc_plan(goal, (0,0))
+            plan, time = dijkstra.calc_plan(start, goal, self.plan_rtime - timeback)
+            
+            if time == -1:
+                print(f"{self.NAME} SEM TEMPO PARA SOCORRER")
+                break
+            
             self.plan = self.plan + plan
             self.plan_rtime = self.plan_rtime - time
             start = goal
 
         # Plan to come back to the base
         goal = (0,0)
-        plan, time = bfs.search(start, goal, self.plan_rtime)
+        plan, time = dijkstra.calc_plan(start, goal, self.plan_rtime)
         self.plan = self.plan + plan
         self.plan_rtime = self.plan_rtime - time
            

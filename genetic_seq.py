@@ -2,7 +2,6 @@ import random
 import numpy as np
 from collections import defaultdict
 from dijkstra import Dijkstra
-from vs.constants import VS
 
 class GASequencer:
     def __init__(self, victims_cluster, map_obj, cost_line=1.0, cost_diag=1.5,
@@ -72,7 +71,7 @@ class GASequencer:
 
             elapsed_time += travel_time + treatment_time
             vitals = self.victims[vid][1]
-            severity_score += vitals[6] * (1 + (4 - vitals[7]) / 4)
+            severity_score += vitals[6]
             current_pos = self.victims[vid][0]
 
         elapsed_time += self.dist_matrix[self._position_to_index(current_pos)][0]
