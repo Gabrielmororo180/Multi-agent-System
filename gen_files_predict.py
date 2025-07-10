@@ -32,29 +32,10 @@ def predict_severity_and_class(model, signals):
             severity_class = model.classifier.predict(features_scaled)[0]
 
             # Step 5: Write predictions to file for test set victims (if test_ids available)
-            if vic_id in model.test_ids:
+            if model.test_ids is None or vic_id in model.test_ids:
                 f_predict.write(f"{vic_id},{severity_value:.2f},{severity_class}\n")
 
-
-if __name__ == "__main__":
-
-    data_folder_name = os.path.join("datasets", "data_4000v")
-
-    current_folder = os.path.abspath(os.getcwd())
-    data_folder = os.path.abspath(os.path.join(current_folder, data_folder_name))
-
-    vitals_file = os.path.join(data_folder,"env_vital_signals.txt")
-
-    # Parte 2 e 3: classificação e regressão
-    test_size = input("Test size(0.25):")
-    if test_size == '': test_size = 0.25
-    else:   
-        try:
-            test_size = float(test_size)
-        except ValueError:
-            print("Valor invalido.")
-            quit()
-
+def read_signals(vitals_file):
     signals = []
     with open(vitals_file, 'r') as f_vitals:
         for vitals in f_vitals:
@@ -63,5 +44,44 @@ if __name__ == "__main__":
             signal[-1] = int(signal[-1])
             signals.append(signal)
 
-    model = PredictionModel(test_size, signals)
-    predict_severity_and_class(model, signals)
+    return signals
+
+
+if __name__ == "__main__":
+
+    folder_train = os.path.join("datasets", "data_4000v")
+    folder_test = os.path.join("datasets", "data_800v")
+
+    current_folder = os.path.abspath(os.getcwd())
+    data_train = os.path.abspath(os.path.join(current_folder, folder_train))
+    data_test = os.path.abspath(os.path.join(current_folder, folder_test))
+
+    # Parte 2 e 3: classificação e regressão
+    test_size = input("Test size(0.0):")
+    if test_size == '': test_size = 0.0
+    else:   
+        try:
+            test_size = float(test_size)
+        except ValueError:
+            print("Valor invalido.")
+            quit()
+
+    vitals_file = os.path.join(data_train, "env_vital_signals.txt")
+    train_signals = read_signals(vitals_file)
+
+    model = PredictionModel(test_size=test_size, signals=train_signals)
+
+    vitals_file = os.path.join(data_test, "env_vital_signals.txt")
+    test_signals = read_signals(vitals_file)
+
+    # Generate file_target.txt from 800v dataset true values
+    with open('file_target.txt', 'w') as f_target:
+        for signal in test_signals:
+            vic_id = signal[0]
+            gravity = signal[6]  # Assuming gravity is at index 6
+            severity_class = signal[7]  # Assuming severity class is at index 7
+            f_target.write(f"{vic_id},{gravity:.2f},{severity_class}\n")
+
+    predict_severity_and_class(model, test_signals)
+
+    model.save_model("trained_model.pkl")

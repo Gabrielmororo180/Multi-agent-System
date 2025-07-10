@@ -3,9 +3,16 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.neural_network import MLPClassifier, MLPRegressor
+
 import pickle
-import csv
+
 import os
+import shap
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for saving plots
+import matplotlib.pyplot as plt
+from colorama import init, Fore
+init()
 
 class PredictionModel:
 
@@ -27,15 +34,27 @@ class PredictionModel:
         y_gravity = np.array(gravity_targets)
         y_severity = np.array(severity_targets)
 
-        # Split into train and test sets
-        X_train, X_test, y_gravity_train, y_gravity_test, y_severity_train, y_severity_test, train_ids, test_ids = train_test_split(
-            X, y_gravity, y_severity, victim_ids, test_size=test_size, random_state=42
-        )
-
         # Scale features
         self.scaler = StandardScaler()
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
+
+        # Handle test_size=0 for training on the full dataset
+        if test_size == 0:
+            X_train = X
+            X_train_scaled = self.scaler.fit_transform(X)
+            y_gravity_train = y_gravity
+            y_severity_train = y_severity
+            train_ids = victim_ids
+            X_test = None
+            X_test_scaled = None
+            #y_severity_test = None
+            test_ids = None
+        else:
+            # Split into train and test sets
+            X_train, X_test, y_gravity_train, y_gravity_test, y_severity_train, y_severity_test, train_ids, test_ids = train_test_split(
+                X, y_gravity, y_severity, victim_ids, test_size=test_size, random_state=42
+            )
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
 
         # Train models
         best_classifier = self.train_classifier(X_train_scaled, y_severity_train)
@@ -44,11 +63,102 @@ class PredictionModel:
         self.test_ids = test_ids
         self.classifier = best_classifier
         self.regressor = best_regressor
+        # Only write file_target.txt if test_ids exists (not for training-only case)
+        if test_ids is not None:
+            # Write true values for test set to file_target.txt
+            with open('file_target.txt', 'w') as f_target:
+                for vid, gr, sev in zip(test_ids, y_gravity_test, y_severity_test):
+                    f_target.write(f"{vid},{gr:.2f},{sev}\n")
 
-        # Write true values for test set to file_target.txt
-        # with open('file_target.txt', 'w') as f_target:
-        #     for vid, gr, sev in zip(test_ids, y_gravity_test, y_severity_test):
-        #         f_target.write(f"{vid},{gr:.2f},{sev}\n")
+
+        # EXPLICABILIDADE
+        if X_test_scaled is not None:
+
+            # Feature names for interpretability
+            feature_names = ['sp', 'dp', 'qp', 'pf', 'rf']
+
+            # Select one instance per severity class (1, 2, 3, 4)
+            selected_indices = []
+            for cls in [1, 2, 3, 4]:
+                idx = np.where(y_severity_test == cls)[0][0]  # Pick the first instance of each class
+                selected_indices.append(idx)
+
+            # Create SHAP explainers
+            # Use a background dataset (summarized with k-means for efficiency)
+            background = shap.kmeans(X_test_scaled, 11)  # clusters for faster computation
+            explainer_clf = shap.KernelExplainer(self.classifier.predict_proba, background)
+            explainer_reg = shap.KernelExplainer(self.regressor.predict, background)
+
+            # Compute SHAP values for the selected instances
+            shap_values_clf = explainer_clf.shap_values(X_test_scaled[selected_indices])
+            shap_values_reg = explainer_reg.shap_values(X_test_scaled[selected_indices])
+
+            # Ensure output directory exists
+            os.makedirs('shap_plots', exist_ok=True)
+
+            # Explain predictions for each instance
+            for i, idx in enumerate(selected_indices):
+                instance = X_test_scaled[idx]
+                true_class = y_severity_test[idx]
+                pred_class = self.classifier.predict([instance])[0]
+                pred_gravity = self.regressor.predict([instance])[0]
+                
+                print(f"\nInstance {idx} (Victim ID: {int(signals[idx][0])}):")
+                print(f"True Class: {true_class}, Predicted Class: {pred_class}")
+                print(f"True Gravity: {y_gravity_test[idx]:.2f}, Predicted Gravity: {pred_gravity:.2f}")
+                
+                # Classifier explanation: Focus on the predicted class
+                print(f"{Fore.YELLOW}Classifier Explanation (Top 3 Features):{Fore.RESET}")
+                shap_values_for_pred_class = shap_values_clf[i][:, pred_class - 1]  # SHAP values for predicted class
+                sorted_indices = np.argsort(np.abs(shap_values_for_pred_class))[::-1]  # Sort by absolute value
+                for j in sorted_indices[:3]:  # Top 3 features
+                    print(f"  {feature_names[j]}: SHAP value = {shap_values_for_pred_class[j]:.4f}")
+                
+                # Regressor explanation
+                print(f"{Fore.YELLOW}Regressor Explanation (Top 3 Features):{Fore.RESET}")
+                shap_values_reg_instance = shap_values_reg[i]
+                sorted_indices_reg = np.argsort(np.abs(shap_values_reg_instance))[::-1]  # Sort by absolute value
+                for j in sorted_indices_reg[:3]:  # Top 3 features
+                    print(f"  {feature_names[j]}: SHAP value = {shap_values_reg_instance[j]:.4f}")
+
+                # Generate and save SHAP force plot for classifier
+                plt.figure(figsize=(10, 5))  # Increased figure size
+                force_plot_clf = shap.force_plot(
+                    explainer_clf.expected_value[pred_class - 1],
+                    shap_values_for_pred_class,
+                    feature_names=feature_names,
+                    matplotlib=True
+                )
+                plt.title(f"SHAP Force Plot - Classifier (Instance {idx}, Class {pred_class})", pad=21)
+                plt.tight_layout()  # Adjust layout to prevent cropping
+                plt.savefig(f'shap_plots/force_clf_instance_{idx}.png', bbox_inches='tight', pad_inches=0.1)
+                plt.close()
+
+                # Generate and save SHAP force plot for regressor
+                force_plot_reg = shap.force_plot(
+                    explainer_reg.expected_value,
+                    shap_values_reg_instance,
+                    feature_names=feature_names,
+                    matplotlib=True
+                )
+                plt.title(f"SHAP Force Plot - Regressor (Instance {idx}, Gravity {pred_gravity:.2f})", pad=21)
+                plt.tight_layout()
+                plt.savefig(f'shap_plots/force_reg_instance_{idx}.png', bbox_inches='tight', pad_inches=0.1)
+                plt.close()
+
+            # Generate and save summary plot for all instances
+            shap.summary_plot(shap_values_clf, X_test_scaled[selected_indices], feature_names=feature_names)
+            plt.title("SHAP Summary Plot - Classifier (All Instances)", pad=21)
+            plt.tight_layout()
+            plt.savefig('shap_plots/summary_clf.png', bbox_inches='tight', pad_inches=0.1)
+            plt.close()
+
+            shap.summary_plot(shap_values_reg, X_test_scaled[selected_indices], feature_names=feature_names)
+            plt.title("SHAP Summary Plot - Regressor (All Instances)", pad=21)
+            plt.savefig('shap_plots/summary_reg.png', bbox_inches='tight', pad_inches=0.1)
+            plt.close()
+
+
 
     def train_classifier(self, X_train, y_train):
         """Train and select the best classifier using GridSearchCV."""
@@ -57,6 +167,12 @@ class PredictionModel:
         #    'criterion': ['gini', 'entropy'],
         #    'max_depth': [2, 4, 8],
         #    'min_samples_leaf': [4, 8]
+        #}
+
+        #dt_params = {
+        #    'criterion': ['gini', 'entropy'],
+        #    'max_depth': [2, 4, 8],
+        #    'min_samples_leaf': [8, 12]
         #}
 
         dt_params = {
@@ -88,8 +204,10 @@ class PredictionModel:
         )
         mlp_clf.fit(X_train, y_train)
 
+
         print(f"DT_Classifier: {dt_clf.best_score_} - {dt_clf.best_estimator_}")
         print(f"MLP_Classifier: {mlp_clf.best_score_} - {mlp_clf.best_estimator_}")
+
 
         # Select the best classifier
         if dt_clf.best_score_ > mlp_clf.best_score_:
@@ -125,11 +243,14 @@ class PredictionModel:
         )
         mlp_reg.fit(X_train, y_train)
 
+        print(f"DT_Regressor: {dt_reg.best_score_} - {dt_reg.best_estimator_}")
+        print(f"MLP_Regressor: {mlp_reg.best_score_} - {mlp_reg.best_estimator_}")
+
         # Select the best regressor (higher neg_mse is better)
         if dt_reg.best_score_ > mlp_reg.best_score_:
             return dt_reg.best_estimator_#, 'DecisionTreeRegressor'
         return mlp_reg.best_estimator_#, 'MLPRegressor'
-    
+
     def save_model(self, filepath="trained_model.pkl"):
         with open(filepath, 'wb') as f:
             pickle.dump(self, f)
@@ -141,38 +262,3 @@ class PredictionModel:
             model = pickle.load(f)
         print(f"Model loaded from {filepath}")
         return model
-    
-def load_external_signals(filepath):
-    print(f"Carregando dados de treinamento")
-    signals = []
-    try:
-        with open(filepath, 'r') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row: continue
-                formatted_row = [
-                    int(row[0]),
-                    float(row[1]),
-                    float(row[2]),
-                    float(row[3]),
-                    float(row[4]),
-                    float(row[5]),
-                    float(row[6]),
-                    int(row[7])
-                ]
-                signals.append(formatted_row)
-        return signals
-    except Exception as e:
-        print(f"ERRO: {e}")
-    
-if __name__ == '__main__':
-    print("--- Starting Model Training ---")
-
-    external_training_file = os.path.join("datasets", "data_4000v", "env_vital_signals.txt")
-    training_signals = load_external_signals(external_training_file)
-    model = PredictionModel(0.25, training_signals)
-    
-    model.save_model("trained_model.pkl")
-    
-    print("--- Model training and saving complete. ---")
-

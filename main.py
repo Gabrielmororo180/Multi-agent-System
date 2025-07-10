@@ -1,6 +1,6 @@
 import sys
 import os
-import csv
+import time
 
 ## importa classes
 from vs.environment import Env
@@ -11,29 +11,6 @@ from prediction_model import PredictionModel
 #USE_MODEL = False
 USE_MODEL = True 
 
-def load_external_signals(filepath):
-    print(f"Carregando dados de treinamento")
-    signals = []
-    try:
-        with open(filepath, 'r') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row: continue
-                formatted_row = [
-                    int(row[0]),
-                    float(row[1]),
-                    float(row[2]),
-                    float(row[3]),
-                    float(row[4]),
-                    float(row[5]),
-                    float(row[6]),
-                    int(row[7])
-                ]
-                signals.append(formatted_row)
-        return signals
-    except Exception as e:
-        print(f"ERRO: {e}")
-
 def main(data_folder_name, config_ag_folder_name):
    
     # Set the path to config files and data files for the environment
@@ -43,20 +20,18 @@ def main(data_folder_name, config_ag_folder_name):
     
     # Instantiate the environment
     env = Env(data_folder)
-    
-    with open('file_target.txt', 'w', newline='') as f_target:
-        # Usar o módulo csv é uma boa prática para evitar erros de formatação
-        import csv
-        writer = csv.writer(f_target)
-        for signal in env.signals:
-            # Formato: id, gravity_value, gravity_class
-            # Extrai o ID (índice 0), valor de gravidade (índice 6) e classe (índice 7)
-            vic_id = signal[0]
-            gravity_value = signal[6]
-            gravity_class = signal[7]
-            writer.writerow([vic_id, f"{gravity_value:.2f}", gravity_class])
+
+    # Parte 2 e 3: classificação e regressão
+    test_size = input("Test size(0.25):")
+    if test_size == '': test_size = 0.25
+    else:   
+        try:
+            test_size = float(test_size)
+        except ValueError:
+            print("Valor invalido.")
+            return
         
-    model = PredictionModel.load_model("trained_model.pkl")
+    model = PredictionModel(test_size, env.signals)
 
     # Instantiate master_rescuer
     # This agent unifies the maps and instantiate other 3 agents
@@ -72,6 +47,7 @@ def main(data_folder_name, config_ag_folder_name):
 
     # Run the environment simulator
     env.run()
+
         
 if __name__ == '__main__':
     """ To get data from a different folder than the default called data
@@ -82,8 +58,8 @@ if __name__ == '__main__':
     else:
         #data_folder_name = os.path.join("datasets", "data_42v_20x20")
         #data_folder_name = os.path.join("datasets", "data_132v_100x80")
+        #data_folder_name = os.path.join("datasets", "data_320v_90x90")
         data_folder_name = os.path.join("datasets", "data_430v_94x94")
-        #data_folder_name = os.path.join("datasets", "data_4000v")
 
         config_ag_folder_name = os.path.join("cfg_1")
 
